@@ -1,0 +1,94 @@
+name: Deploy Apache Web Server
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "public-html/**"
+      - ".github/workflows/apache-deploy.yaml"
+
+permissions:
+  contents: read
+  id-token: write  # For OIDC if using OpenID Connect
+
+concurrency:
+  group: deployment
+  cancel-in-progress: false
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate HTML
+        run: |
+          for file in public-html/*.html; do
+            echo "Checking $file"
+            # Add HTML validation
+          done
+
+  deploy:
+    needs: [security-scan, validate]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://your-site.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: public-html
+
+      - name: Deploy files
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "public-html/*"
+          target: "/var/www/html"
+          strip_components: 1
+          rm: true  # Remove old files
+
+      - name: Verify Apache is healthy
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            systemctl reload apache2
+            sleep 2
+            curl -f http://localhost/index.html > /dev/null
+            echo "✓ Deployment verified"
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./public-html
+          format: cyclonedx
+          output-file: sbom.json
+
+      - name: Upload deployment record
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-record
+          retention-days: 90
+          files: sbom.json
